@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+
+import { useEffect, useMemo, useState } from "react";
 
 type Product = {
   id: number;
@@ -22,7 +23,7 @@ type Movement = {
   date: string;
 };
 
-type Screen = "register" | "detail" | "success" | "error" | "movement" | "alerts" | null;
+type Screen = "register" | "edit" | "detail" | "success" | "error" | "movement" | "alerts" | null;
 
 const initialProducts: Product[] = [
   { id: 1, code: "BSK-1001", name: "Chaqueta", description: "Cazadora cropped con cremallera", size: "M", color: "Negro", stock: 18, minimum: 8, demand: 92, status: "Activo" },
@@ -33,12 +34,7 @@ const initialProducts: Product[] = [
   { id: 6, code: "BSK-1006", name: "Sudadera", description: "Sudadera básica con capucha", size: "L", color: "Gris", stock: 0, minimum: 12, demand: 27, status: "Agotado" },
 ];
 
-const initialMovements: Movement[] = [
-  { id: 1, type: "Salida", code: "BSK-1001", product: "Chaqueta", quantity: 3, date: "Hoy, 10:42" },
-  { id: 2, type: "Entrada", code: "BSK-1003", product: "Pantalón", quantity: 20, date: "Hoy, 09:15" },
-  { id: 3, type: "Salida", code: "BSK-1002", product: "Vestido", quantity: 2, date: "Ayer, 18:20" },
-  { id: 4, type: "Entrada", code: "BSK-1005", product: "Falda", quantity: 12, date: "Ayer, 12:05" },
-];
+const initialMovements: Movement[] = [];
 
 function Icon({ name, size = 19 }: { name: string; size?: number }) {
   const paths: Record<string, React.ReactNode> = {
@@ -61,10 +57,40 @@ function Icon({ name, size = 19 }: { name: string; size?: number }) {
 export default function App() {
   const [template, setTemplate] = useState(1);
   const [products, setProducts] = useState(initialProducts);
+  const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState("");
   const [movements, setMovements] = useState(initialMovements);
   const [search, setSearch] = useState("");
   const [screen, setScreen] = useState<Screen>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [productsResponse, movementsResponse] = await Promise.all([
+          fetch("http://localhost:3000/api/productos"),
+          fetch("http://localhost:3000/api/movimientos"),
+        ]);
+
+        if (!productsResponse.ok || !movementsResponse.ok) {
+          throw new Error("No se pudieron cargar los datos.");
+        }
+
+        const productsData = await productsResponse.json();
+        const movementsData = await movementsResponse.json();
+
+        setProducts(productsData);
+        setMovements(movementsData);
+      } catch (error) {
+        setApiError("No se pudo conectar con la base de datos.");
+        console.error(error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadData();
+  }, []);
 
   const filtered = useMemo(() => products.filter((product) =>
     `${product.name} ${product.code} ${product.color}`.toLowerCase().includes(search.toLowerCase()),
@@ -73,43 +99,202 @@ export default function App() {
   const lowStock = products.filter((product) => product.stock <= product.minimum);
   const totalStock = products.reduce((sum, product) => sum + product.stock, 0);
 
-  function addProduct(event: React.FormEvent<HTMLFormElement>) {
+  // Registrar un producto nuevo
+  async function addProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
     const data = new FormData(event.currentTarget);
-    const requiredFields = ["name", "code", "description", "size", "color", "stock", "minimum", "status"];
-    if (requiredFields.some((field) => !String(data.get(field) ?? "").trim())) {
-      setScreen("error");
-      return;
-    }
-    const stock = Number(data.get("stock"));
-    setProducts((current) => [...current, {
-      id: Date.now(),
-      code: String(data.get("code")),
-      name: String(data.get("name")),
-      description: String(data.get("description")),
-      size: String(data.get("size")),
-      color: String(data.get("color")),
-      stock,
+
+    const product = {
+      code: String(data.get("code")).trim(),
+      name: String(data.get("name")).trim(),
+      description: String(data.get("description")).trim(),
+      size: String(data.get("size")).trim(),
+      color: String(data.get("color")).trim(),
+      stock: Number(data.get("stock")),
       minimum: Number(data.get("minimum")),
-      demand: 0,
-      status: String(data.get("status")) as Product["status"],
-    }]);
-    setScreen("success");
+      status: String(data.get("status")),
+    };
+
+    try {
+      const response = await fetch("http://localhost:3000/api/productos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(product),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        alert(result.error || "No se pudo registrar el producto.");
+        return;
+      }
+
+      const newProduct: Product = {
+        id: Number(result.id),
+        ...product,
+        demand: 0,
+        status: product.status as Product["status"],
+      };
+
+      setProducts((current) => [...current, newProduct]);
+      setScreen("success");
+    } catch (error) {
+      alert("No se pudo conectar con el servidor.");
+      console.error(error);
+    }
   }
 
-  function addMovement(event: React.FormEvent<HTMLFormElement>) {
+  // Modificar un producto existente
+  async function updateProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!selectedProduct) return;
+
+    const data = new FormData(event.currentTarget);
+
+    const product = {
+      code: String(data.get("code")).trim(),
+      name: String(data.get("name")).trim(),
+      description: String(data.get("description")).trim(),
+      size: String(data.get("size")).trim(),
+      color: String(data.get("color")).trim(),
+      stock: Number(data.get("stock")),
+      minimum: Number(data.get("minimum")),
+      demand: selectedProduct.demand,
+      status: String(data.get("status")),
+    };
+
+    try {
+      const response = await fetch(
+        `http://localhost:3000/api/productos/${selectedProduct.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(product),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        alert(result.error || "No se pudo actualizar el producto.");
+        return;
+      }
+
+      const updatedProduct: Product = {
+        ...selectedProduct,
+        ...product,
+        status: product.status as Product["status"],
+      };
+
+      setProducts((current) =>
+        current.map((item) =>
+          item.id === selectedProduct.id ? updatedProduct : item
+        )
+      );
+
+      setSelectedProduct(updatedProduct);
+      setScreen("detail");
+      alert("Producto actualizado correctamente.");
+    } catch (error) {
+      alert("No se pudo conectar con el servidor.");
+      console.error(error);
+    }
+  }
+
+  // Eliminar un producto
+  async function deleteProduct() {
+    if (!selectedProduct) return;
+
+    const confirmar = window.confirm(
+      `¿Estás segura de que deseas eliminar el producto "${selectedProduct.name}"?`
+    );
+
+    if (!confirmar) return;
+
+    try {
+      const response = await fetch(
+        `http://localhost:3000/api/productos/${selectedProduct.id}`,
+        { method: "DELETE" }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        alert(result.error || "No se pudo eliminar el producto.");
+        return;
+      }
+
+      setProducts((current) =>
+        current.filter((item) => item.id !== selectedProduct.id)
+      );
+
+      setSelectedProduct(null);
+      setScreen(null);
+      setTemplate(2);
+
+      alert("Producto eliminado correctamente.");
+    } catch (error) {
+      alert("No se pudo conectar con el servidor.");
+      console.error(error);
+    }
+  }
+
+  // Registrar entradas y salidas en SQLite
+  async function addMovement(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
     const data = new FormData(event.currentTarget);
     const productId = Number(data.get("product"));
     const type = String(data.get("type")) as "Entrada" | "Salida";
     const quantity = Number(data.get("quantity"));
-    const product = products.find((item) => item.id === productId);
-    if (!product || !quantity) return;
-    const newStock = type === "Entrada" ? product.stock + quantity : Math.max(0, product.stock - quantity);
-    setProducts((current) => current.map((item) => item.id === productId ? { ...item, stock: newStock, status: newStock > 0 ? "Activo" : "Agotado" } : item));
-    setMovements((current) => [{ id: Date.now(), type, code: product.code, product: product.name, quantity, date: "Ahora" }, ...current]);
-    setScreen(null);
-    setTemplate(3);
+
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      alert("Ingresa una cantidad válida.");
+      return;
+    }
+
+    try {
+      const response = await fetch("http://localhost:3000/api/movimientos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productId, type, quantity }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        alert(result.error || "No se pudo registrar el movimiento.");
+        return;
+      }
+
+      setProducts((current) =>
+        current.map((item) =>
+          item.id === productId
+            ? {
+                ...item,
+                stock: result.stock,
+                status: result.stock > 0 ? "Activo" : "Agotado",
+              }
+            : item
+        )
+      );
+
+      const movementsResponse = await fetch("http://localhost:3000/api/movimientos");
+
+      if (movementsResponse.ok) {
+        const movementsData = await movementsResponse.json();
+        setMovements(movementsData);
+      }
+
+      setScreen(null);
+      setTemplate(3);
+      alert("Movimiento registrado correctamente.");
+    } catch (error) {
+      alert("No se pudo conectar con el servidor.");
+      console.error(error);
+    }
   }
 
   function navigateTemplate(nextTemplate: number) {
@@ -122,8 +307,16 @@ export default function App() {
     setScreen("detail");
   }
 
+  function editProduct(product: Product) {
+    setSelectedProduct(product);
+    setScreen("edit");
+  }
+
   return (
     <div className="app">
+      {loading && <p>Cargando productos...</p>}
+      {apiError && <p>{apiError}</p>}
+
       <header className="topbar">
         <div className="wordmark">BERSHKA <span>STOCK</span></div>
         <nav className="template-switcher" aria-label="Seleccionar plantilla">
@@ -141,9 +334,9 @@ export default function App() {
           <PageTitle eyebrow="PLANTILLA 01 · RESUMEN OPERATIVO" title="Inventario" subtitle="Vista rápida del estado general de la tienda." action={() => setScreen("register")} actionText="Nuevo producto" />
           <section className="stats-grid">
             <Stat value={String(totalStock)} label="Unidades disponibles" detail="+12 esta semana" />
-            <Stat value={String(products.length)} label="Referencias activas" detail="6 categorías" />
+            <Stat value={String(products.length)} label="Referencias activas" detail="Productos registrados" />
             <Stat value={String(lowStock.length)} label="Alertas de stock" detail="Requieren pedido" danger />
-            <Stat value="38" label="Salidas hoy" detail="+8% vs. ayer" />
+            <Stat value={String(movements.filter((m) => m.type === "Salida").length)} label="Salidas registradas" detail="Movimientos guardados" />
           </section>
           <section className="two-columns">
             <Panel title="Productos recientes" meta="Existencias actuales">
@@ -156,9 +349,9 @@ export default function App() {
             </Panel>
           </section>
           <section className="demand-strip">
-            <div><span>MAYOR DEMANDA</span><strong>Chaqueta</strong><small>92 salidas en los últimos 30 días</small></div>
+            <div><span>MAYOR DEMANDA</span><strong>{[...products].sort((a, b) => b.demand - a.demand)[0]?.name || "Sin datos"}</strong><small>Demanda registrada en el inventario</small></div>
             <div className="demand-bars">{[48, 72, 55, 89, 68, 96, 78, 100, 84, 91].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
-            <div className="demand-score"><Icon name="trend" size={24} /><strong>+18%</strong><span>este mes</span></div>
+            <div className="demand-score"><Icon name="trend" size={24} /><strong>{Math.max(0, ...products.map((p) => p.demand))}</strong><span>demanda</span></div>
           </section>
         </main>
       )}
@@ -181,12 +374,13 @@ export default function App() {
         <main className="page">
           <PageTitle eyebrow="PLANTILLA 03 · MOVIMIENTOS Y DEMANDA" title="Control de stock" subtitle="Registra entradas y salidas. Las existencias se actualizan automáticamente." action={() => setScreen("movement")} actionText="Registrar movimiento" />
           <section className="control-layout">
-            <Panel title="Últimos movimientos" meta="Actualizado ahora">
+            <Panel title="Últimos movimientos" meta="Historial guardado en la base de datos">
               <div className="movement-list">
                 {movements.map((movement) => <article key={movement.id}><span className={movement.type === "Entrada" ? "in" : "out"}>{movement.type === "Entrada" ? "+" : "−"}{movement.quantity}</span><div><strong>{movement.product}</strong><small>{movement.code}</small></div><b>{movement.type}</b><time>{movement.date}</time></article>)}
+                {movements.length === 0 && <p>No hay movimientos registrados.</p>}
               </div>
             </Panel>
-            <Panel title="Demanda de productos" meta="Últimos 30 días">
+            <Panel title="Demanda de productos" meta="Datos registrados">
               <div className="ranking">
                 {[...products].sort((a, b) => b.demand - a.demand).map((product, index) => <article key={product.id}><b>0{index + 1}</b><div><strong>{product.name}</strong><span><i style={{ width: `${product.demand}%` }} /></span></div><em>{product.demand}</em></article>)}
               </div>
@@ -201,7 +395,8 @@ export default function App() {
       )}
 
       {screen === "register" && <RegisterScreen onSubmit={addProduct} onBack={() => navigateTemplate(2)} />}
-      {screen === "detail" && selectedProduct && <ProductDetail product={selectedProduct} onBack={() => navigateTemplate(2)} onMovement={() => setScreen("movement")} />}
+      {screen === "edit" && selectedProduct && <EditScreen product={selectedProduct} onSubmit={updateProduct} onBack={() => setScreen("detail")} />}
+      {screen === "detail" && selectedProduct && <ProductDetail product={selectedProduct} onBack={() => navigateTemplate(2)} onMovement={() => setScreen("movement")} onEdit={() => editProduct(selectedProduct)} onDelete={deleteProduct} />}
       {screen === "success" && <ResultScreen type="success" onPrimary={() => navigateTemplate(2)} onSecondary={() => setScreen("register")} />}
       {screen === "error" && <ResultScreen type="error" onPrimary={() => setScreen("register")} onSecondary={() => navigateTemplate(2)} />}
       {screen === "movement" && <MovementScreen products={products} onSubmit={addMovement} onBack={() => navigateTemplate(3)} />}
@@ -229,12 +424,27 @@ function ProductTable({ products, compact = false, onSelect }: { products: Produ
   })}</tbody></table></div>;
 }
 
-function ProductForm({ onSubmit, onCancel }: { onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onCancel: () => void }) {
-  return <form onSubmit={onSubmit} className="form" noValidate><label>Nombre<input name="name" placeholder="Ej. Chaqueta denim" /></label><label>Código<input name="code" placeholder="BSK-1007" /></label><label className="wide">Descripción<input name="description" placeholder="Descripción breve del producto" /></label><label>Talla<input name="size" placeholder="S, M, L..." /></label><label>Color<input name="color" placeholder="Negro" /></label><label>Cantidad<input min="0" name="stock" type="number" placeholder="0" /></label><label>Stock mínimo<input min="0" name="minimum" type="number" placeholder="5" /></label><label className="wide">Estado<select name="status" defaultValue=""><option value="" disabled>Selecciona un estado</option><option>Activo</option><option>Agotado</option></select></label><div className="form-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="submit">Guardar producto</button></div></form>;
+function ProductForm({ onSubmit, onCancel, product, buttonText = "Guardar producto" }: { onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onCancel: () => void; product?: Product; buttonText?: string }) {
+  return <form onSubmit={onSubmit} className="form">
+    <label>Nombre<input required name="name" defaultValue={product?.name || ""} placeholder="Ej. Chaqueta denim" /></label>
+    <label>Código<input required name="code" defaultValue={product?.code || ""} placeholder="BSK-1007" /></label>
+    <label className="wide">Descripción<input required name="description" defaultValue={product?.description || ""} placeholder="Descripción breve del producto" /></label>
+    <label>Talla<input required name="size" defaultValue={product?.size || ""} placeholder="S, M, L..." /></label>
+    <label>Color<input required name="color" defaultValue={product?.color || ""} placeholder="Negro" /></label>
+    <label>Cantidad<input required min="0" name="stock" type="number" defaultValue={product?.stock ?? ""} placeholder="0" /></label>
+    <label>Stock mínimo<input required min="0" name="minimum" type="number" defaultValue={product?.minimum ?? ""} placeholder="5" /></label>
+    <label className="wide">Estado<select required name="status" defaultValue={product?.status || ""}><option value="" disabled>Selecciona un estado</option><option>Activo</option><option>Agotado</option></select></label>
+    <div className="form-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="submit">{buttonText}</button></div>
+  </form>;
 }
 
 function MovementForm({ products, onSubmit, onCancel }: { products: Product[]; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onCancel: () => void }) {
-  return <form onSubmit={onSubmit} className="form"><label className="wide">Producto<select required name="product">{products.map((product) => <option key={product.id} value={product.id}>{product.code} · {product.name} ({product.stock} uds.)</option>)}</select></label><label>Tipo<select name="type"><option>Entrada</option><option>Salida</option></select></label><label>Cantidad<input required min="1" name="quantity" type="number" placeholder="1" /></label><div className="form-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="submit">Actualizar stock</button></div></form>;
+  return <form onSubmit={onSubmit} className="form">
+    <label className="wide">Producto<select required name="product">{products.map((product) => <option key={product.id} value={product.id}>{product.code} · {product.name} ({product.stock} uds.)</option>)}</select></label>
+    <label>Tipo<select name="type"><option>Entrada</option><option>Salida</option></select></label>
+    <label>Cantidad<input required min="1" step="1" name="quantity" type="number" placeholder="1" /></label>
+    <div className="form-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="submit">Actualizar stock</button></div>
+  </form>;
 }
 
 function ScreenHeader({ eyebrow, title, subtitle, onBack }: { eyebrow: string; title: string; subtitle: string; onBack: () => void }) {
@@ -245,13 +455,17 @@ function RegisterScreen({ onSubmit, onBack }: { onSubmit: (event: React.FormEven
   return <main className="page new-screen"><ScreenHeader eyebrow="INVENTARIO · NUEVA REFERENCIA" title="Registrar prenda" subtitle="Completa la información para incorporar una nueva prenda al inventario." onBack={onBack} /><section className="screen-card form-card"><div className="section-intro"><b>DATOS DE LA PRENDA</b><span>Todos los campos son obligatorios</span></div><ProductForm onSubmit={onSubmit} onCancel={onBack} /></section></main>;
 }
 
+function EditScreen({ product, onSubmit, onBack }: { product: Product; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onBack: () => void }) {
+  return <main className="page new-screen"><ScreenHeader eyebrow={`INVENTARIO · ${product.code}`} title="Editar producto" subtitle="Modifica la información de esta prenda." onBack={onBack} /><section className="screen-card form-card"><div className="section-intro"><b>ACTUALIZAR DATOS DE LA PRENDA</b><span>Revisa la información antes de guardar</span></div><ProductForm product={product} onSubmit={onSubmit} onCancel={onBack} buttonText="Guardar cambios" /></section></main>;
+}
+
 function MovementScreen({ products, onSubmit, onBack }: { products: Product[]; onSubmit: (event: React.FormEvent<HTMLFormElement>) => void; onBack: () => void }) {
   return <main className="page new-screen"><ScreenHeader eyebrow="CONTROL · ACTUALIZAR EXISTENCIAS" title="Entradas y salidas" subtitle="Registra un movimiento y el stock se actualizará automáticamente." onBack={onBack} /><section className="screen-card form-card"><div className="section-intro"><b>NUEVO MOVIMIENTO</b><span>Selecciona la prenda y la cantidad</span></div><MovementForm products={products} onSubmit={onSubmit} onCancel={onBack} /></section></main>;
 }
 
-function ProductDetail({ product, onBack, onMovement }: { product: Product; onBack: () => void; onMovement: () => void }) {
+function ProductDetail({ product, onBack, onMovement, onEdit, onDelete }: { product: Product; onBack: () => void; onMovement: () => void; onEdit: () => void; onDelete: () => void }) {
   const warning = product.stock <= product.minimum;
-  return <main className="page new-screen"><ScreenHeader eyebrow={`INVENTARIO · ${product.code}`} title={product.name} subtitle="Consulta la información completa de esta referencia." onBack={onBack} /><section className="detail-layout"><div className="product-visual"><span>{product.name.slice(0, 1)}</span><small>REFERENCIA {product.code}</small></div><div className="screen-card detail-card"><div className="detail-status"><span className={warning ? "badge warning" : "badge"}>{product.stock === 0 ? "Agotado" : warning ? "Stock bajo" : product.status}</span><b>{product.stock} unidades</b></div><dl><div><dt>Nombre</dt><dd>{product.name}</dd></div><div><dt>Código</dt><dd>{product.code}</dd></div><div className="wide"><dt>Descripción</dt><dd>{product.description}</dd></div><div><dt>Talla</dt><dd>{product.size}</dd></div><div><dt>Color</dt><dd>{product.color}</dd></div><div><dt>Cantidad mínima</dt><dd>{product.minimum} unidades</dd></div><div><dt>Demanda</dt><dd>{product.demand} salidas</dd></div></dl><div className="detail-actions"><button onClick={onBack}>Volver al inventario</button><button onClick={onMovement}>Registrar movimiento</button></div></div></section></main>;
+  return <main className="page new-screen"><ScreenHeader eyebrow={`INVENTARIO · ${product.code}`} title={product.name} subtitle="Consulta la información completa de esta referencia." onBack={onBack} /><section className="detail-layout"><div className="product-visual"><span>{product.name.slice(0, 1)}</span><small>REFERENCIA {product.code}</small></div><div className="screen-card detail-card"><div className="detail-status"><span className={warning ? "badge warning" : "badge"}>{product.stock === 0 ? "Agotado" : warning ? "Stock bajo" : product.status}</span><b>{product.stock} unidades</b></div><dl><div><dt>Nombre</dt><dd>{product.name}</dd></div><div><dt>Código</dt><dd>{product.code}</dd></div><div className="wide"><dt>Descripción</dt><dd>{product.description}</dd></div><div><dt>Talla</dt><dd>{product.size}</dd></div><div><dt>Color</dt><dd>{product.color}</dd></div><div><dt>Cantidad mínima</dt><dd>{product.minimum} unidades</dd></div><div><dt>Demanda</dt><dd>{product.demand} salidas</dd></div></dl><div className="detail-actions"><button onClick={onBack}>Volver al inventario</button><button onClick={onMovement}>Registrar movimiento</button><button onClick={onEdit}>Editar producto</button><button onClick={onDelete}>Eliminar producto</button></div></div></section></main>;
 }
 
 function ResultScreen({ type, onPrimary, onSecondary }: { type: "success" | "error"; onPrimary: () => void; onSecondary: () => void }) {
