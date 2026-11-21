@@ -1,0 +1,11 @@
+{
+  "title": "Gestión de Inventario para Bershka",
+  "description": "Streamline inventory management for clothing stores with real-time tracking, sales analytics, and stock alerts to optimize operations and boost profitability.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
