@@ -1,5 +1,7 @@
 
 import { useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabaseClient";
+
 
 type Product = {
   id: number;
@@ -64,33 +66,51 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const [productsResponse, movementsResponse] = await Promise.all([
-          fetch("http://localhost:3000/api/productos"),
-          fetch("http://localhost:3000/api/movimientos"),
-        ]);
+  
+useEffect(() => {
+  async function loadData() {
+    try {
+      const { data: productsData, error: productsError } =
+        await supabase
+          .from("productos")
+          .select("*")
+          .order("id", { ascending: true });
 
-        if (!productsResponse.ok || !movementsResponse.ok) {
-          throw new Error("No se pudieron cargar los datos.");
-        }
+      if (productsError) throw productsError;
 
-        const productsData = await productsResponse.json();
-        const movementsData = await movementsResponse.json();
+      const { data: movementsData, error: movementsError } =
+        await supabase
+          .from("movimientos")
+          .select("*")
+          .order("date", { ascending: false });
 
-        setProducts(productsData);
-        setMovements(movementsData);
-      } catch (error) {
-        setApiError("No se pudo conectar con la base de datos.");
-        console.error(error);
-      } finally {
-        setLoading(false);
-      }
+      if (movementsError) throw movementsError;
+
+      setProducts(productsData || []);
+
+      setMovements(
+        (movementsData || []).map((movement) => ({
+          id: movement.id,
+          type: movement.type,
+          code: movement.code,
+          product: movement.product,
+          quantity: movement.quantity,
+          date: new Date(movement.date).toLocaleString("es-MX"),
+        }))
+      );
+
+      setApiError("");
+    } catch (error) {
+      setApiError("No se pudo conectar con la base de datos.");
+      console.error("Error de Supabase:", error);
+    } finally {
+      setLoading(false);
     }
+  }
 
-    loadData();
-  }, []);
+  loadData();
+}, []);
+
 
   const filtered = useMemo(() => products.filter((product) =>
     `${product.name} ${product.code} ${product.color}`.toLowerCase().includes(search.toLowerCase()),
@@ -99,203 +119,209 @@ export default function App() {
   const lowStock = products.filter((product) => product.stock <= product.minimum);
   const totalStock = products.reduce((sum, product) => sum + product.stock, 0);
 
-  // Registrar un producto nuevo
-  async function addProduct(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  
+// Registrar un producto nuevo
+async function addProduct(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
 
-    const data = new FormData(event.currentTarget);
+  const data = new FormData(event.currentTarget);
 
-    const product = {
-      code: String(data.get("code")).trim(),
-      name: String(data.get("name")).trim(),
-      description: String(data.get("description")).trim(),
-      size: String(data.get("size")).trim(),
-      color: String(data.get("color")).trim(),
-      stock: Number(data.get("stock")),
-      minimum: Number(data.get("minimum")),
-      status: String(data.get("status")),
-    };
+  const product = {
+    code: String(data.get("code")).trim(),
+    name: String(data.get("name")).trim(),
+    description: String(data.get("description")).trim(),
+    size: String(data.get("size")).trim(),
+    color: String(data.get("color")).trim(),
+    stock: Number(data.get("stock")),
+    minimum: Number(data.get("minimum")),
+    demand: 0,
+    status: String(data.get("status")) as Product["status"],
+  };
 
-    try {
-      const response = await fetch("http://localhost:3000/api/productos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(product),
-      });
+  try {
+    const { data: newProduct, error } = await supabase
+      .from("productos")
+      .insert([product])
+      .select()
+      .single();
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        alert(result.error || "No se pudo registrar el producto.");
-        return;
-      }
-
-      const newProduct: Product = {
-        id: Number(result.id),
-        ...product,
-        demand: 0,
-        status: product.status as Product["status"],
-      };
-
-      setProducts((current) => [...current, newProduct]);
-      setScreen("success");
-    } catch (error) {
-      alert("No se pudo conectar con el servidor.");
-      console.error(error);
-    }
-  }
-
-  // Modificar un producto existente
-  async function updateProduct(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!selectedProduct) return;
-
-    const data = new FormData(event.currentTarget);
-
-    const product = {
-      code: String(data.get("code")).trim(),
-      name: String(data.get("name")).trim(),
-      description: String(data.get("description")).trim(),
-      size: String(data.get("size")).trim(),
-      color: String(data.get("color")).trim(),
-      stock: Number(data.get("stock")),
-      minimum: Number(data.get("minimum")),
-      demand: selectedProduct.demand,
-      status: String(data.get("status")),
-    };
-
-    try {
-      const response = await fetch(
-        `http://localhost:3000/api/productos/${selectedProduct.id}`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(product),
-        }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        alert(result.error || "No se pudo actualizar el producto.");
-        return;
-      }
-
-      const updatedProduct: Product = {
-        ...selectedProduct,
-        ...product,
-        status: product.status as Product["status"],
-      };
-
-      setProducts((current) =>
-        current.map((item) =>
-          item.id === selectedProduct.id ? updatedProduct : item
-        )
-      );
-
-      setSelectedProduct(updatedProduct);
-      setScreen("detail");
-      alert("Producto actualizado correctamente.");
-    } catch (error) {
-      alert("No se pudo conectar con el servidor.");
-      console.error(error);
-    }
-  }
-
-  // Eliminar un producto
-  async function deleteProduct() {
-    if (!selectedProduct) return;
-
-    const confirmar = window.confirm(
-      `¿Estás segura de que deseas eliminar el producto "${selectedProduct.name}"?`
-    );
-
-    if (!confirmar) return;
-
-    try {
-      const response = await fetch(
-        `http://localhost:3000/api/productos/${selectedProduct.id}`,
-        { method: "DELETE" }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        alert(result.error || "No se pudo eliminar el producto.");
-        return;
-      }
-
-      setProducts((current) =>
-        current.filter((item) => item.id !== selectedProduct.id)
-      );
-
-      setSelectedProduct(null);
-      setScreen(null);
-      setTemplate(2);
-
-      alert("Producto eliminado correctamente.");
-    } catch (error) {
-      alert("No se pudo conectar con el servidor.");
-      console.error(error);
-    }
-  }
-
-  // Registrar entradas y salidas en SQLite
-  async function addMovement(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const data = new FormData(event.currentTarget);
-    const productId = Number(data.get("product"));
-    const type = String(data.get("type")) as "Entrada" | "Salida";
-    const quantity = Number(data.get("quantity"));
-
-    if (!Number.isInteger(quantity) || quantity <= 0) {
-      alert("Ingresa una cantidad válida.");
+    if (error) {
+      alert(error.message);
       return;
     }
 
-    try {
-      const response = await fetch("http://localhost:3000/api/movimientos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId, type, quantity }),
-      });
+    setProducts((current) => [...current, newProduct as Product]);
+    setScreen("success");
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        alert(result.error || "No se pudo registrar el movimiento.");
-        return;
-      }
-
-      setProducts((current) =>
-        current.map((item) =>
-          item.id === productId
-            ? {
-                ...item,
-                stock: result.stock,
-                status: result.stock > 0 ? "Activo" : "Agotado",
-              }
-            : item
-        )
-      );
-
-      const movementsResponse = await fetch("http://localhost:3000/api/movimientos");
-
-      if (movementsResponse.ok) {
-        const movementsData = await movementsResponse.json();
-        setMovements(movementsData);
-      }
-
-      setScreen(null);
-      setTemplate(3);
-      alert("Movimiento registrado correctamente.");
-    } catch (error) {
-      alert("No se pudo conectar con el servidor.");
-      console.error(error);
-    }
+  } catch (error) {
+    alert("No se pudo registrar el producto.");
+    console.error("Error de Supabase:", error);
   }
+}
+
+
+  // Actualizar un producto
+async function updateProduct(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+
+  if (!selectedProduct) return;
+
+  const data = new FormData(event.currentTarget);
+
+  const product = {
+    code: String(data.get("code")).trim(),
+    name: String(data.get("name")).trim(),
+    description: String(data.get("description")).trim(),
+    size: String(data.get("size")).trim(),
+    color: String(data.get("color")).trim(),
+    stock: Number(data.get("stock")),
+    minimum: Number(data.get("minimum")),
+    demand: selectedProduct.demand,
+    status: String(data.get("status")) as Product["status"],
+  };
+
+  try {
+    const { data: updatedProduct, error } = await supabase
+      .from("productos")
+      .update(product)
+      .eq("id", selectedProduct.id)
+      .select()
+      .single();
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setProducts((current) =>
+      current.map((item) =>
+        item.id === selectedProduct.id
+          ? (updatedProduct as Product)
+          : item
+      )
+    );
+
+    setSelectedProduct(updatedProduct as Product);
+    setScreen("detail");
+
+    alert("Producto actualizado correctamente.");
+  } catch (error) {
+    alert("No se pudo actualizar el producto.");
+    console.error("Error de Supabase:", error);
+  }
+}
+
+  // Eliminar un producto
+  
+async function deleteProduct() {
+  if (!selectedProduct) return;
+
+  const confirmDelete = window.confirm(
+    `¿Estás segura de eliminar el producto ${selectedProduct.name}?`
+  );
+
+  if (!confirmDelete) return;
+
+  try {
+    const { error } = await supabase
+      .from("productos")
+      .delete()
+      .eq("id", selectedProduct.id);
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setProducts((current) =>
+      current.filter((product) => product.id !== selectedProduct.id)
+    );
+
+    setSelectedProduct(null);
+    setTemplate(1);
+
+    alert("Producto eliminado correctamente.");
+  } catch (error) {
+    alert("No se pudo eliminar el producto.");
+    console.error("Error de Supabase:", error);
+  }
+}
+
+
+  // Registrar entradas y salidas en SQLite
+  
+async function addMovement(event: React.FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+
+  const data = new FormData(event.currentTarget);
+
+  const productId = Number(data.get("product"));
+  const type = String(data.get("type")) as "Entrada" | "Salida";
+  const quantity = Number(data.get("quantity"));
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    alert("Ingresa una cantidad válida.");
+    return;
+  }
+
+  try {
+    const { data: newStock, error } = await supabase.rpc(
+      "registrar_movimiento",
+      {
+        p_product_id: productId,
+        p_type: type,
+        p_quantity: quantity,
+      }
+    );
+
+    if (error) {
+      alert(error.message);
+      return;
+    }
+
+    setProducts((current) =>
+      current.map((product) =>
+        product.id === productId
+          ? {
+              ...product,
+              stock: newStock,
+              demand:
+                type === "Salida"
+                  ? product.demand + quantity
+                  : product.demand,
+              status: newStock > 0 ? "Activo" : "Agotado",
+            }
+          : product
+      )
+    );
+
+    const { data: movementsData, error: movementsError } =
+      await supabase
+        .from("movimientos")
+        .select("*")
+        .order("date", { ascending: false });
+
+    if (movementsError) throw movementsError;
+
+    setMovements(
+      (movementsData || []).map((movement) => ({
+        id: movement.id,
+        type: movement.type,
+        code: movement.code,
+        product: movement.product,
+        quantity: movement.quantity,
+        date: new Date(movement.date).toLocaleString("es-MX"),
+      }))
+    );
+
+    alert("Movimiento registrado correctamente.");
+    setTemplate(3);
+
+  } catch (error) {
+    alert("No se pudo registrar el movimiento.");
+    console.error("Error de Supabase:", error);
+  }
+}
 
   function navigateTemplate(nextTemplate: number) {
     setScreen(null);
